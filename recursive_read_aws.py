@@ -6,6 +6,7 @@ from avro.datafile import DataFileReader, DataFileWriter
 from avro.io import DatumReader, DatumWriter
 import json
 import tdclient
+form Modification_Gregory_event_driven import email_campaigns
 
 #bucket is located in        US East (N. Virginia)
 
@@ -14,7 +15,6 @@ import tdclient
     Parse the date information from the <file_name_string>
     This is necessary so that all the information is not pulled at the same time.
 '''
-
 def get_aws_Dates(answer):
     all_dates = []
     for date in answer:
@@ -23,8 +23,6 @@ def get_aws_Dates(answer):
             date = date.split()[1]
             all_dates.append(date)
     return sorted(all_dates, reverse = True)
-
-
 
 
 '''
@@ -36,8 +34,6 @@ def get_boto_Dates(answer):
     for item in answer:
         result.append(item.get('Prefix').split('/')[3] + "/")
     return sorted(result, reverse = True)
-
-
 
 
 '''
@@ -52,24 +48,38 @@ def eliminate_space(input):
     return output
 
 
-
 '''
     If there is a need to start from scratch, this method resets the all the dates to 2010 in the config file
     The entire transfer begins again
     WARNING: it can take a lot longer then the lifetime of a lambda function to run through all the files
 '''
-def clean_config(email_links):
+'''
+    If there is a need to start from scratch, this method resets the all the dates to 2010 in the config file
+    The entire transfer begins again
+    WARNING: it can take a lot longer then the lifetime of a lambda function to run through all the files
+'''
+
+def clean_Reload(email_links, database_name = "braze"):
     for key in email_links.keys():
         email_links[key]['date'] = 'date=2010-04-17-20/'
         email_links[key]['time'] = '00:00:00'
+    td = tdclient.Client(os.environ['td_apikey'])
+    for key in email_links:
+        table = key.split("/")[0]
+        table = table.split(".")
+        table_name = table[0] + "_" + table[1] + "_" + table[2] + "_" + table[3]
 
+
+        drop_table = "DROP TABLE IF EXISTS " + table_name
+        job = td.query(database_name, drop_table, type = "presto")
+        job.wait()
 
 '''
     This method pulls data from s3 and puts it to Treasure data, braze database
     The created temporary directory has to be placed in '/tmp/'
     Lambda doesn't allow for files to be written anywhere else
 '''
-def import_from_aws(directory_avro = "/tmp/directory_avro"):
+def import_from_aws(directory_avro = "/tmp/directory_avro",  clean_start = False):
 
     '''
         Location of the relevant files in the bucket
@@ -86,9 +96,11 @@ def import_from_aws(directory_avro = "/tmp/directory_avro"):
     bucket = 'fivestars-kprod-braze-events'
 
     #The configuration file is downloaded from s3 bucket where it is stored.
-    output = client.download_file(Bucket=bucket, Key=link2 + "config.json", Filename = "/tmp/config.json")
-    email_links = json.load(open("/tmp/config.json", "rb")) #loaded as a dictionary
 
+    #output = client.download_file(Bucket=bucket, Key=link2 + "config.json", Filename = "/tmp/config.json")
+    email_links = json.load(open("config.json", "rb")) #loaded as a dictionary
+    if(clean_start == True):
+        clean_Reload(email_links)
 
 
     '''
@@ -177,17 +189,29 @@ def import_from_aws(directory_avro = "/tmp/directory_avro"):
                 -combined to a single large array
                 -checked for duplicates.
             '''
+
             temp_json_output = []
             for file in files_to_download:
                 filename = "/tmp/temp.avro"
                 client.download_file(Bucket = bucket, Key = file, Filename = filename)
-                reader = DataFileReader(open(filename, "rb"), DatumReader())
+                try:
+                    reader = DataFileReader(open(filename, "rb"), DatumReader())
+                except Exception as e:
+                    pass #this needs to be expended
+                '''
+                '''
                 for user in reader:
                     if user not in temp_json_output:
                         temp_json_output.append(user)
 
             for item in temp_json_output:
                 json_output.append(item)
+
+        if(clean_start == True):
+            table_name = event.split("/")[0].split(".")
+            table_name = table_name[0] + "_" + table_name[1] + "_" + table_name[2] + "_" + table_name[3]
+            fast_push_to_treasure.new_schema_create_new_table(filename = filename, table_name = table_name, database_name = "braze")
+
 
         #files are moved to a single file /tmp/temp.json
         json_file_name = "/tmp/temp.json"
@@ -207,5 +231,37 @@ def import_from_aws(directory_avro = "/tmp/directory_avro"):
         except Exception as e:
             print(e)
         #config.json is uploaded back to s3 bucket.
-        client.put_object(Body = json.dumps(email_links, indent = 4, sort_keys = True), Bucket=bucket, Key=link2 + "config.json")
+        #client.put_object(Body = json.dumps(email_links, indent = 4, sort_keys = True), Bucket=bucket, Key=link2 + "config.json")
     return "success" #Lambda function returns here.
+
+'''
+    All the avro files are read, converted to JSON then appended to a single list
+    client = aws Client
+    file_names = names of the avro files
+    bucket = s3 bucket
+    error_keys = if there are errors, this is the dictionary where error files would be stored
+'''
+def read_then_to_json(client, file_names, bucket, error_keys):
+    temp_json_output = []
+
+
+    for file in file_names:
+        filename = "/tmp/temp.avro"
+        try:
+            client.download_file(Bucket = bucket, Key = file, Filename = filename)
+        except:
+            ''' files which could not be downloaded'''
+            error_keys['aws']['files'].append(file)
+            continue
+
+        try:
+            reader = DataFileReader(open(filename , "rb"), DatumReader())
+        except Exception as e:
+            ''' files that couldn't be opened '''
+            error_keys['open']['files'].append(file)
+            continue
+
+        for user in reader:
+            if user not in temp_json_output:
+                temp_json_output.append(user)
+    return temp_json_output
