@@ -1,0 +1,32 @@
+{
+    "users.messages.email.Bounce/": {
+        "date": "date=2010-04-17-20/",
+        "time": "00:00:00",
+        "table_name":"users_messages_email_Bounce"
+    },
+    "users.messages.email.Click/": {
+        "date": "date=2010-04-17-20/",
+        "time": "00:00:00",
+        "table_name":"users_messages_email_Click"
+    },
+    "users.messages.email.Delivery/": {
+        "date": "date=2010-04-17-20/",
+        "time": "00:00:00",
+        "table_name":"users_messages_email_Delivery"
+    },
+    "users.messages.email.Open/": {
+        "date": "date=2010-04-17-20/",
+        "time": "00:00:00",
+        "table_name":"users_messages_email_Open"
+    },
+    "users.messages.email.Send/": {
+        "date": "date=2010-04-17-20/",
+        "time": "00:00:00",
+        "table_name":"users_messages_email_Send"
+    },
+    "users.messages.email.Unsubscribe/": {
+        "date": "date=2010-04-17-20/",
+        "time": "00:00:00",
+        "table_name":"users_messages_email_Unsubscribe"
+    }
+}

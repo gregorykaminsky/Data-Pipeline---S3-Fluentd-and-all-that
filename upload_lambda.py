@@ -55,7 +55,7 @@ def create_function(functionName):
         Handler= functionName + '.lambda_handler',
         Code={
             'S3Bucket': bucket,
-            'S3Key': link2 + filename_zip,
+            'S3Key': link2 + filename_zip
             },
         Description='MoveData',
         Timeout=300,
@@ -70,7 +70,7 @@ def create_function(functionName):
             },
     )
 
-def update_function(functionName):
+def update_function_code(functionName, bucket, key):
     lambda_client = boto3.client('lambda')
     response = lambda_client.update_function_code(
         FunctionName=functionName,
@@ -113,11 +113,6 @@ response = client.delete_object(
     Key=link2 + filename_zip,
 )
 client.upload_file(Filename = filename_zip, Bucket=bucket, Key = link2 + filename_zip)
-response = client.delete_object(
-    Bucket='fivestars-kprod-braze-events',
-    Key=link2 + filename_zip,
-)
-
 
 lambda_client = boto3.client('lambda')
 '''
@@ -134,4 +129,9 @@ functionName = "Modification_Gregory_event_driven"
     Uncomment the line below to create a function.
 '''
 #create_function(functionName)
-update_function(functionName)
+update_function_code(functionName, bucket = bucket, key = link2 + filename_zip)
+
+response = client.delete_object(
+    Bucket='fivestars-kprod-braze-events',
+    Key=link2 + filename_zip
+)

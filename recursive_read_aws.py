@@ -1,28 +1,52 @@
 import os
 import json
 import boto3
-import fast_push_to_treasure
 from avro.datafile import DataFileReader, DataFileWriter
 from avro.io import DatumReader, DatumWriter
 import json
 import tdclient
-form Modification_Gregory_event_driven import email_campaigns
 
 #bucket is located in        US East (N. Virginia)
 
 
 '''
-    Parse the date information from the <file_name_string>
-    This is necessary so that all the information is not pulled at the same time.
+    Schema from an avro file is converted to schema used in presto database.
 '''
-def get_aws_Dates(answer):
-    all_dates = []
-    for date in answer:
-        date = date.strip()
-        if(date != ''):
-            date = date.split()[1]
-            all_dates.append(date)
-    return sorted(all_dates, reverse = True)
+def convert_schema_to_Presto(input_dict):
+    name = input_dict['name']
+    type = input_dict['type']
+    comment = "\'" + input_dict['doc'] + "\'"
+
+    if(isinstance(type, list) == True):
+        type = 'VARCHAR'
+    elif(type == 'string'):
+        type = 'VARCHAR'
+    elif(type == 'int' or type == 'long'):
+        type = 'BIGINT'
+    elif(type == 'float' or type == 'double'):
+        type = 'DOUBLE'
+    else:
+        type = 'VARCHAR'
+    return name + " " + type + " COMMENT " + comment
+
+'''
+    Given an address of a file, its schema is recorded and if such schema doesn't exist,
+    a new table is created in braze database
+'''
+def new_schema_create_new_table(filename, table_name, database_name = "braze"):
+    reader = DataFileReader(open(filename, "rb"), DatumReader())
+    schema = json.loads(reader.meta['avro.schema'])
+    create_table = "CREATE TABLE IF NOT EXISTS " + table_name
+    all_field_string = ''
+    for field in  schema['fields']:
+        comma = ', '
+        if(all_field_string == ""):
+            comma = ' '
+        all_field_string = all_field_string + comma + convert_schema_to_Presto(field)
+    create_table = create_table + ' ( ' + all_field_string +  ' ); '
+    td = tdclient.Client(os.environ['td_apikey'])
+    job = td.query(database_name, create_table, type = "presto")
+    job.wait()
 
 
 '''
@@ -35,19 +59,6 @@ def get_boto_Dates(answer):
         result.append(item.get('Prefix').split('/')[3] + "/")
     return sorted(result, reverse = True)
 
-
-'''
-    Eliminates spaces in an array consisting of strings
-'''
-def eliminate_space(input):
-    output = []
-    for line in input:
-        line = line.strip()
-        if(line != ''):
-            output.append(line)
-    return output
-
-
 '''
     If there is a need to start from scratch, this method resets the all the dates to 2010 in the config file
     The entire transfer begins again
@@ -59,28 +70,34 @@ def eliminate_space(input):
     WARNING: it can take a lot longer then the lifetime of a lambda function to run through all the files
 '''
 
-def clean_Reload(email_links, database_name = "braze"):
+def clean_Reload(email_links, input_tables, database_name = "braze"):
     for key in email_links.keys():
         email_links[key]['date'] = 'date=2010-04-17-20/'
         email_links[key]['time'] = '00:00:00'
     td = tdclient.Client(os.environ['td_apikey'])
+
     for key in email_links:
-        table = key.split("/")[0]
-        table = table.split(".")
-        table_name = table[0] + "_" + table[1] + "_" + table[2] + "_" + table[3]
+        if(input_tables == [] or (key in input_tables)):
+            table = key.split("/")[0]
+            table = table.split(".")
+            table_name = table[0] + "_" + table[1] + "_" + table[2] + "_" + table[3]
 
 
-        drop_table = "DROP TABLE IF EXISTS " + table_name
-        job = td.query(database_name, drop_table, type = "presto")
-        job.wait()
+            drop_table = "DROP TABLE IF EXISTS " + table_name
+            job = td.query(database_name, drop_table, type = "presto")
+            job.wait()
 
 '''
     This method pulls data from s3 and puts it to Treasure data, braze database
     The created temporary directory has to be placed in '/tmp/'
     Lambda doesn't allow for files to be written anywhere else
-'''
-def import_from_aws(directory_avro = "/tmp/directory_avro",  clean_start = False):
+    @clean_start = Tries to transfer all the files in s3
+    @input_tables = can specify which tables to transfer and which to leave alone.
+                    format of the dictionary:
 
+                    {'users.messages.email.Click/':'date=2010-04-17-20/', 'users.messages.email.Delivery/':'2010:00:00'}
+'''
+def import_from_aws(directory_avro = "/tmp/directory_avro",  clean_start = False, input_tables = {}, test = True):
     '''
         Location of the relevant files in the bucket
     '''
@@ -95,13 +112,12 @@ def import_from_aws(directory_avro = "/tmp/directory_avro",  clean_start = False
     )
     bucket = 'fivestars-kprod-braze-events'
 
-    #The configuration file is downloaded from s3 bucket where it is stored.
-
-    #output = client.download_file(Bucket=bucket, Key=link2 + "config.json", Filename = "/tmp/config.json")
     email_links = json.load(open("config.json", "rb")) #loaded as a dictionary
-    if(clean_start == True):
-        clean_Reload(email_links)
-
+    if(clean_start == True and test == False):
+        clean_Reload(email_links, input_tables)
+    else:
+        for table in input_tables:
+            email_links[table]['date'] = input_tables[table]
 
     '''
         Each event is a folder in the s3 bucket corresponded to the event type.
@@ -113,6 +129,9 @@ def import_from_aws(directory_avro = "/tmp/directory_avro",  clean_start = False
             That way one event type is processed at a time.
     '''
     for event in email_links.keys():
+        if(event not in input_tables):
+            continue
+
         '''
             This is the last transferred date and time for this event event
             Necessary information to avoid duplicates.
@@ -123,17 +142,11 @@ def import_from_aws(directory_avro = "/tmp/directory_avro",  clean_start = False
         result = client.list_objects(Bucket=bucket, Prefix=link2 + link3 + event, Delimiter='/').get('CommonPrefixes')
 
         if(len(result) > 999):
-            pass
-            '''
-            problem that has to be fixed.
-            This implies that some results have been left behind. Amazon does not return lists larger then 1000
-            This will be done in the next couple of days.
-            '''
+            print ("Severe problem, result is longer then 999")
 
 
         '''
             The maximal dates that would be transfered are recorded
-
         '''
         all_dates = get_boto_Dates(result) #the date is actually part of the file name
         if(last_transferred_date <= all_dates[0]):
@@ -152,8 +165,6 @@ def import_from_aws(directory_avro = "/tmp/directory_avro",  clean_start = False
             email_links[event]['import_date'] = all_dates[0]
         else:
             continue
-
-
 
         '''
             The list of all files with dates greater then the last_transferred date is compiled.
@@ -210,7 +221,7 @@ def import_from_aws(directory_avro = "/tmp/directory_avro",  clean_start = False
         if(clean_start == True):
             table_name = event.split("/")[0].split(".")
             table_name = table_name[0] + "_" + table_name[1] + "_" + table_name[2] + "_" + table_name[3]
-            fast_push_to_treasure.new_schema_create_new_table(filename = filename, table_name = table_name, database_name = "braze")
+            new_schema_create_new_table(filename = filename, table_name = table_name, database_name = "braze")
 
 
         #files are moved to a single file /tmp/temp.json
@@ -223,16 +234,16 @@ def import_from_aws(directory_avro = "/tmp/directory_avro",  clean_start = False
         #this single file is uploaded to Treasure Data.
         td =  tdclient.Client(os.environ['td_apikey'])
         try:
-            result = td.import_file(db_name = "braze", table_name = email_links[event]['table_name'], format = "json", file = json_file_name)
-
-            #if the line above went well, the new updated time is saved to the config.json class.
-            email_links[event]['time'] = email_links[event]['import_time']
-            email_links[event]['date'] = email_links[event]['import_date']
+            if(test == True):
+                print('This is a test on my computer')
+                print('table_name:' + email_links[event]['table_name'])
+                print()
+            else:
+                result = td.import_file(db_name = "braze", table_name = email_links[event]['table_name'], format = "json", file = json_file_name)
         except Exception as e:
             print(e)
-        #config.json is uploaded back to s3 bucket.
-        #client.put_object(Body = json.dumps(email_links, indent = 4, sort_keys = True), Bucket=bucket, Key=link2 + "config.json")
-    return "success" #Lambda function returns here.
+    return "success"
+
 
 '''
     All the avro files are read, converted to JSON then appended to a single list
@@ -241,7 +252,7 @@ def import_from_aws(directory_avro = "/tmp/directory_avro",  clean_start = False
     bucket = s3 bucket
     error_keys = if there are errors, this is the dictionary where error files would be stored
 '''
-def read_then_to_json(client, file_names, bucket, error_keys):
+def read_then_to_json(client, file_names, bucket, error_keys_table):
     temp_json_output = []
 
 
@@ -249,16 +260,19 @@ def read_then_to_json(client, file_names, bucket, error_keys):
         filename = "/tmp/temp.avro"
         try:
             client.download_file(Bucket = bucket, Key = file, Filename = filename)
-        except:
+        except Exception as e:
             ''' files which could not be downloaded'''
-            error_keys['aws']['files'].append(file)
+            print ("File could not be downloaded: " + file)
+            error_keys_table['aws']['files'].append(file)
             continue
 
         try:
             reader = DataFileReader(open(filename , "rb"), DatumReader())
+
         except Exception as e:
             ''' files that couldn't be opened '''
-            error_keys['open']['files'].append(file)
+            print ("File could not be opened: " + file)
+            error_keys_table['open']['files'].append(file)
             continue
 
         for user in reader:
